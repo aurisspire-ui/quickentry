@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Quick Entry</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#141418">
+<!-- iOS PWA -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<style>
+  html,body { height:100%; }
+  body { font-family: -apple-system, system-ui, Segoe UI, Roboto, sans-serif; margin: 16px; background:#0f0f13; color:#f2f2f2; }
+  h1 { margin: 8px 0 16px; font-weight: 700; }
+  .row { display: grid; gap: 12px; grid-template-columns: 1fr; }
+  label { font-size: 14px; display:block; }
+  input, select, textarea, button { font-size: 16px; padding: 12px; border-radius:10px; border:1px solid #2d2d35; background:#15151a; color:#f2f2f2; }
+  input::file-selector-button { border: none; padding:8px 12px; }
+  .actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+  .pill { background:#1f1f27; border:1px solid #2e2e36; border-radius:999px; padding:6px 10px; font-size:12px; }
+  .card { background:#13131a; border:1px solid #262630; border-radius:12px; padding:12px; }
+  canvas { border:1px dashed #3a3a45; border-radius:8px; touch-action: none; background:#0e0e12; }
+  @media (prefers-color-scheme: light) {
+    body { background:#ffffff; color:#111; }
+    input, select, textarea, button { background:#fff; color:#111; border-color:#ddd; }
+    .card { background:#fff; border-color:#eee; }
+    canvas { background:#fafafa; border-color:#ddd; }
+  }
+  @media print { .actions, .pill { display:none } body { margin: 10mm } }
+  footer { margin-top:18px; font-size:12px; opacity:.7 }
+</style>
+</head>
+<body>
+  <h1>Quick Entry <span class="pill" id="statusPill">offline ready</span></h1>
+  <form id="f" class="row card">
+    <label>Item ID <input name="id" required placeholder="e.g. PPE-001"></label>
+    <label>Qty <input name="qty" type="number" inputmode="decimal" step="0.01" required></label>
+    <label>Date <input name="date" type="date" required></label>
+    <label>Photo <input name="photo" type="file" accept="image/*" capture="environment"></label>
+    <label>Notes <textarea name="notes" rows="3" placeholder="Add details..."></textarea></label>
+    <div>
+      <div style="margin-bottom:6px">Signature</div>
+      <canvas id="sig" width="340" height="150"></canvas>
+      <div class="actions">
+        <button type="button" id="clearSig">Clear signature</button>
+      </div>
+    </div>
+    <div class="actions">
+      <button type="button" id="getLoc">Add GPS</button>
+      <button type="button" id="saveLocal">Save (offline)</button>
+      <button type="button" id="exportCsv">Export CSV</button>
+      <button type="button" onclick="window.print()">Print / PDF</button>
+      <button type="submit">Submit (no server)</button>
+    </div>
+  </form>
+
+  <footer>
+    Tip: Add to Home Screen for app-like experience. Works fully offline after first load.
+  </footer>
+
+<script>
+  // Service worker registration
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./service-worker.js').catch(console.error);
+    });
+  }
+
+  // Connection pill
+  const pill = document.getElementById('statusPill');
+  function updatePill(){
+    pill.textContent = navigator.onLine ? 'online' : 'offline';
+  }
+  window.addEventListener('online', updatePill);
+  window.addEventListener('offline', updatePill);
+  updatePill();
+
+  // Signature pad (basic)
+  const c = document.getElementById('sig'), ctx = c.getContext('2d');
+  let drawing=false, last=null;
+  function pos(e){ const r=c.getBoundingClientRect();
+    const t = e.touches?.[0] || e; return {x:(t.clientX-r.left), y:(t.clientY-r.top)}}
+  function start(e){ drawing=true; last=pos(e); e.preventDefault(); }
+  function move(e){ if(!drawing) return; const p=pos(e);
+    ctx.lineWidth=2; ctx.lineCap='round'; ctx.strokeStyle='#e6e6e6'; ctx.beginPath();
+    ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke(); last=p; e.preventDefault();}
+  function end(){ drawing=false; }
+  c.addEventListener('mousedown',start); c.addEventListener('mousemove',move); c.addEventListener('mouseup',end);
+  c.addEventListener('touchstart',start,{passive:false}); c.addEventListener('touchmove',move,{passive:false}); c.addEventListener('touchend',end);
+
+  document.getElementById('clearSig').onclick=()=>{ ctx.clearRect(0,0,c.width,c.height); };
+
+  // GPS
+  document.getElementById('getLoc').onclick=()=>{
+    if(!navigator.geolocation) return alert('Geolocation not available');
+    navigator.geolocation.getCurrentPosition(
+      p=>{
+        const f=document.getElementById('f');
+        f.dataset.lat=p.coords.latitude.toFixed(6);
+        f.dataset.lng=p.coords.longitude.toFixed(6);
+        alert(`Location added: ${f.dataset.lat}, ${f.dataset.lng}`);
+      },
+      err=>alert('Location error: '+err.message),
+      {enableHighAccuracy:true, timeout:10000}
+    );
+  };
+
+  // Offline save
+  const KEY='quick-entry-drafts';
+  document.getElementById('saveLocal').onclick=()=>{
+    const fd=new FormData(document.getElementById('f'));
+    const o=Object.fromEntries(fd.entries());
+    o.signature = c.toDataURL('image/png');
+    o.lat = document.getElementById('f').dataset.lat||'';
+    o.lng = document.getElementById('f').dataset.lng||'';
+    // note: files aren’t stored in localStorage; keep filenames only
+    o.photo = (fd.get('photo') && fd.get('photo').name) || '';
+    const arr = JSON.parse(localStorage.getItem(KEY)||'[]');
+    arr.push(o);
+    localStorage.setItem(KEY, JSON.stringify(arr));
+    alert('Saved offline.');
+  };
+
+  // CSV export
+  document.getElementById('exportCsv').onclick=()=>{
+    const rows = JSON.parse(localStorage.getItem(KEY)||'[]');
+    if(!rows.length) return alert('No offline records to export');
+    const headers = Object.keys(rows[0]);
+    const csv = [headers.join(','), ...rows.map(r=>headers.map(h=>{
+      const v = (r[h]??'').toString().replaceAll('"','""');
+      return `"${v}"`;
+    }).join(','))].join('\n');
+    const blob = new Blob([csv], {type:'text/csv'});
+    const url = URL.createObjectURL(blob);
+    const a = Object.assign(document.createElement('a'), {href:url, download:`entries_${new Date().toISOString().slice(0,10)}.csv`});
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  // Dummy submit handler
+  document.getElementById('f').addEventListener('submit', e=>{
+    e.preventDefault();
+    alert('No server connected yet — use Export CSV or Print.');
+  });
+</script>
+</body>
+</html>
